@@ -11,6 +11,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from sandlermisc.gas_constant import GasConstant
+from sandlermisc.statereporter import StateReporter
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ class CorrStsChart(ABC):
         logger.debug(f"  Single-phase: {len(self.interpolators) - n_two_phase}")
         logger.debug(f"  Two-phase: {n_two_phase}")
     
-    def get_depvar(self, indep, Tr, phase='auto'):
+    def get_depvar(self, indep, Tr, phase='auto', round: int = None):
         """
         Calculate compressibility factor Z.
         
@@ -336,7 +337,9 @@ class CorrStsChart(ABC):
             - 'auto': Return vapor phase for indep < indep_sat, liquid for indep > indep_sat
             - 'vapor': Force vapor phase
             - 'liquid': Force liquid phase
-        
+        round : int, optional
+            Number of decimal places to round the result to.
+
         Returns
         -------
         depvar : float or ndarray
@@ -385,8 +388,8 @@ class CorrStsChart(ABC):
                 depvar_result[i] = depvar_low + alpha * (depvar_high - depvar_low)
         
         if scalar_input:
-            return depvar_result.item()
-        return depvar_result
+            return np.round(depvar_result.item(), round) if round is not None else depvar_result.item()
+        return np.round(depvar_result, round) if round is not None else depvar_result
     
     def _interpolate_on_isotherm(self, indep, Tr, phase='auto'):
         """Interpolate Z on a single isotherm, handling phase transitions."""
@@ -571,28 +574,34 @@ class CorrespondingStatesChartReader:
         self.Hchart = EnthalpyDepartureChart()
         self.Schart = EntropyDepartureChart()
 
-    def readcharts(self, Tr: float, Pr: float):
-        Z = self.Zchart.get_depvar(Pr, Tr)
-        Hdep = self.Hchart.get_depvar(Pr, Tr)
-        Sdep = self.Schart.get_depvar(Pr, Tr)
+    def readcharts(self, Tr: float, Pr: float, round: int = 2):
+        Z = self.Zchart.get_depvar(Pr, Tr, round=round)
+        Hdep = self.Hchart.get_depvar(Pr, Tr, round=round)
+        Sdep = self.Schart.get_depvar(Pr, Tr, round=round)
         return dict(Z=Z, Hdep=Hdep, Sdep=Sdep)
     
     def dimensionalized_lookup(self, T: float, P: float, Tc: float, Pc: float, R_pv: GasConstant):
         Tr = T / Tc
         Pr = P / Pc
-        defaults = self.readcharts(Tr, Pr)
-        Hdep = -defaults['Hdep'] * Tc * 4.184
-        Sdep = -defaults['Sdep'] * 4.184
+        chartreads = self.readcharts(Tr, Pr, round=2)
+        Hdep = -chartreads['Hdep'] * Tc * 4.184
+        Sdep = -chartreads['Sdep'] * 4.184
         # Z = PV/RT -> V = ZRT/P
-        v = defaults['Z'] * R_pv * T / P
-        return dict(
-            Tr=Tr,
-            Pr=Pr,
-            v=v,
-            Hdep=Hdep,
-            Sdep=Sdep,
-            defaults=defaults
-        )
+        v = chartreads['Z'] * R_pv * T / P
+        result = StateReporter({})
+        result.add_property('T', T, 'K', '{: .2f}')
+        result.add_property('P', P, R_pv.pressure_unit, '{: .2f}')
+        # result.add_property('Tc', Tc, 'K', '{: .2f}')
+        # result.add_property('Pc', Pc, R_pv.pressure_unit, '{: .2f}')
+        result.add_property('Tr', Tr, '', '{: .2f}')
+        result.add_property('Pr', Pr, '', '{: .2f}')
+        result.add_property('v', v, f'{R_pv.volume_unit}/mol', '{: .6f}')
+        result.add_property('Z', chartreads['Z'], '', '{: .2f}')
+        result.add_property('Hdep', Hdep, 'J/mol', '{: .2f}')
+        result.add_property('Sdep', Sdep, 'J/mol-K', '{: .2f}')
+        result.add_value_to_property('Hdep', chartreads['Hdep'], '-cal/mol-K', '{: .2f}')
+        result.add_value_to_property('Sdep', chartreads['Sdep'], '-cal/mol-K', '{: .2f}')
+        return result
         
 def demo():
     import matplotlib.pyplot as plt

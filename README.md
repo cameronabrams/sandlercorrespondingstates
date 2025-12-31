@@ -18,13 +18,17 @@ pip install sandlercorrespondingstates
 ### Command-line
 
 ```sh
-$ sandlercorrespondingstates state -T 400 -P 0.5 -n methane   
-Tr: 2.100840336134454
-Pr: 0.10869565217391305
-v: 0.06643327431492282
-Hdep: 4.020845568856118
-Sdep: 0.022707829240921282
-defaults: {'Z': 0.9987607943819014, 'Hdep': -0.00504729598256478, 'Sdep': -0.005427301443814838}
+$ sandlercorrespondingstates state -n methane -P 7.5 -T 400 
+T  =  400.00 K
+P  =  7.50 mpa
+Tc =  190.40 K
+Pc =  4.60 mpa
+Tr =  2.10
+Pr =  1.63
+v  =  0.000435 m3/mol
+Z  =  0.98
+Hdep = -438.15 J/mol = -0.55 cal/mol-K
+Sdep = -1.13 J/mol-K = -0.27 cal/mol-K
 ```
 
 ### API
@@ -38,18 +42,25 @@ defaults: {'Z': 0.9987607943819014, 'Hdep': -0.00504729598256478, 'Sdep': -0.005
 >>> cs = CorrespondingStatesChartReader()
 >>> Rpv = GasConstant("bar", "m3")
 >>> result = cs.dimensionalized_lookup(T=400, P=0.5, Tc=component.Tc, Pc=component.Pc/10, R_pv=Rpv)
->>> for prop, value in result.items():
->>>     print(f"{prop}: {value}")
-Tr: 2.100840336134454
-Pr: 0.10869565217391305
-v: 0.06643327431492282
-Hdep: 4.020845568856118
-Sdep: 0.022707829240921282
-defaults: {'Z': 0.9987607943819014, 'Hdep': -0.00504729598256478, 'Sdep': -0.005427301443814838}
+>>> print(result.report())
+T  =  400.00 K
+P  =  7.50 mpa
+Tc =  190.40 K
+Pc =  4.60 mpa
+Tr =  2.10
+Pr =  1.63
+v  =  0.000435 m3/mol
+Z  =  0.98
+Hdep = -438.15 J/mol = -0.55 cal/mol-K
+Sdep = -1.13 J/mol-K = -0.27 cal/mol-K
 ```
 
 ## Release History
 
+* 0.3.0
+    * `delta` subcommand added
+* 0.2.0
+    * `StateReporter` used
 * 0.1.2
     * fixed messaging errors
 * 0.1.0
