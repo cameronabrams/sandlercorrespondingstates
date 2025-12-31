@@ -4,11 +4,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 [project]
 name = "sandlercorrespondingstates"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
   { name="Cameron F Abrams", email="cfa22@drexel.edu" },
 ]
-description = "correspondingstatesellaneous utilities from Chemical, Biochemical, and Engineering Thermodynamics (5th edition) by Stan Sandler"
+description = "Corresponding states utilities from Chemical, Biochemical, and Engineering Thermodynamics (5th edition) by Stan Sandler"
 readme = "README.md"
 requires-python = ">=3.7"
 classifiers = [
