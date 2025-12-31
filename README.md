@@ -50,6 +50,8 @@ defaults: {'Z': 0.9987607943819014, 'Hdep': -0.00504729598256478, 'Sdep': -0.005
 
 ## Release History
 
+* 0.1.2
+    * fixed messaging errors
 * 0.1.0
     * Initial release
 

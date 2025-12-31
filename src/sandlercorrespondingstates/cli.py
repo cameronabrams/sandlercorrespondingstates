@@ -67,7 +67,7 @@ def cli():
     subcommands = {
         'state': dict(
             func = state,
-            help = 'work with a cubic equation of state for a single state'
+            help = 'work with corresponding states for a single state'
         ),
         'delta': dict(
             func = None,
@@ -75,8 +75,8 @@ def cli():
         ),
     }
     parser = ap.ArgumentParser(
-        prog='sandlercubics',
-        description='Interact with cubic equations of state in Sandler\'s textbook'
+        prog='sandlercorrespondingstates',
+        description='Interact with corresponding states in Sandler\'s textbook'
     )
     parser.add_argument(
         '-b',
@@ -96,7 +96,7 @@ def cli():
         '-l',
         '--log',
         type=str,
-        default='pygacity-diagnostics.log',
+        default='',
         help='File to which diagnostic log messages are written'
     )
     subparsers = parser.add_subparsers(
@@ -144,6 +144,7 @@ def cli():
         help='component name (e.g., methane, ethane, etc.)'
     )
     args = parser.parse_args()
+    setup_logging(args)
     if args.banner:
         print(banner)
     if hasattr(args, 'func'):
