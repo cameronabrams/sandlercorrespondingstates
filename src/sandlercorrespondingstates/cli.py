@@ -122,7 +122,7 @@ def cli():
         ),
         'delta': dict(
             func = delta,
-            help = 'work with property differences between two states (not implemented yet)'
+            help = 'work with property differences between two states'
         ),
     }
     parser = ap.ArgumentParser(

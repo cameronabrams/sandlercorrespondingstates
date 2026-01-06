@@ -57,6 +57,8 @@ Sdep = -1.13 J/mol-K = -0.27 cal/mol-K
 
 ## Release History
 
+* 0.4.1
+    * help updated
 * 0.3.0
     * `delta` subcommand added
 * 0.2.0
