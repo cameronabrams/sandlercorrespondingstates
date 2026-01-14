@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import json
-from scipy.interpolate import Rbf
+from scipy.interpolate import interp1d, Rbf
 import warnings
 
 import logging
@@ -279,10 +279,34 @@ class CorrStsChart(ABC):
             logger.debug(f"  Liquid: {len(liquid_indices)} points, Hdep: [{liq_depvar.min():.3f}, {liq_depvar.max():.3f}], Pr: [{liq_indep.min():.3f}, {liq_indep.max():.3f}]")
             logger.debug(f"  Vapor:  {len(vapor_indices)} points, Hdep: [{vap_depvar.min():.3f}, {vap_depvar.max():.3f}], Pr: [{vap_indep.min():.3f}, {vap_indep.max():.3f}]")
 
+        # make interpolators for the liquid and vapor branch of the two-phase envelope
+        both_branch_indep = [c[f'{self.indepvar}_sat'] for c in self.phase_transitions.values() if c is not None]
+        both_branch_Tr = [Tr for Tr in self.Tr_values if self.phase_transitions[Tr] is not None]
+        vapor_branch_depvar = [c[f'{self.depvar}_V'] for c in self.phase_transitions.values() if c is not None]
+        liquid_branch_depvar = [c[f'{self.depvar}_L'] for c in self.phase_transitions.values() if c is not None]
+
+
+        both_branch_indep.append(1.0) # critical point
+        both_branch_Tr.append(1.0)
+        # get the critical depvar value from Tr=1.0 isotherm and indepvar value 1.0
+        crit_depvar = self.isotherms[1.0][self.depvar][np.argmin(np.abs(self.isotherms[1.0][self.indepvar]-1.0))]
+        vapor_branch_depvar.append(crit_depvar)
+        liquid_branch_depvar.append(crit_depvar)
+        logger.debug(f'Critical value of {self.depvar} at Tr=1.0 is {crit_depvar:.3f}')
+
+        logger.debug(f"Creating saturation curve interpolators for {self.depvar}")
+        for i, v, l in zip(both_branch_indep, vapor_branch_depvar, liquid_branch_depvar):
+            logger.debug(f'  indep: {i:.3f} vapor {self.depvar}: {v:.3f} liquid {self.depvar}: {l:.3f}')
+        for t, i in zip(both_branch_Tr, both_branch_indep):
+            logger.debug(f'  Tr: {t:.3f} indep: {i:.3f}')
+        self.sat_indep_to_vapor_depvar = interp1d(both_branch_indep, vapor_branch_depvar, kind='linear', fill_value='extrapolate')
+        self.sat_indep_to_liquid_depvar = interp1d(both_branch_indep, liquid_branch_depvar, kind='linear', fill_value='extrapolate')
+        self.sat_indep_to_saturation_Tr = interp1d(both_branch_indep, both_branch_Tr, kind='linear', fill_value='extrapolate')
+        self.sat_Tr_to_saturation_indep = interp1d(both_branch_Tr, both_branch_indep, kind='linear', fill_value='extrapolate')
+
     def _create_interpolators(self):
         """Create interpolators for each isotherm, handling phase transitions."""
         
-        from scipy.interpolate import interp1d
         
         self.interpolators = {}
         
@@ -291,13 +315,9 @@ class CorrStsChart(ABC):
                 # Single-phase region - simple interpolator
                 indep = self.isotherms[Tr][self.indepvar]
                 depvar = self.isotherms[Tr][self.depvar]
-                if Tr < 1.0:
-                    phase = 'liquid'
-                else:
-                    phase = 'vapor'
                 self.interpolators[Tr] = {
                     'type': 'single_phase',
-                    'phase': phase,
+                    'phase': None,
                     'interp': interp1d(indep, depvar, kind='linear',
                                       bounds_error=False, fill_value='extrapolate')
                 }
@@ -322,118 +342,148 @@ class CorrStsChart(ABC):
         logger.debug(f"  Single-phase: {len(self.interpolators) - n_two_phase}")
         logger.debug(f"  Two-phase: {n_two_phase}")
     
-    def get_depvar(self, indep, Tr, phase='auto', round: int = None):
+    def get_depvar(self, indep: float, Tr: float, round: int = None) -> dict:
         """
-        Calculate compressibility factor Z.
+        Determine dependent variable value(s) from independent variable and reduced temperature.
         
         Parameters
         ----------
-        indep : float or array-like
+        indep : float
             independent variable
-        Tr : float or array-like
+        Tr : float
             Reduced temperature
-        phase : {'auto', 'vapor', 'liquid'}, optional
-            For two-phase region:
-            - 'auto': Return vapor phase for indep < indep_sat, liquid for indep > indep_sat
-            - 'vapor': Force vapor phase
-            - 'liquid': Force liquid phase
         round : int, optional
             Number of decimal places to round the result to.
 
         Returns
         -------
-        depvar : float or ndarray
-            dependent variable
+        dict:
+            Dependent variable value(s) with keys 'subcooled', 'satd-liquid', 'satd-vapor', 'superheated', 'supercritical' as applicable.
         
-        Notes
-        -----
-        For Tr < 1.0 and near saturation, the isotherm is discontinuous.
-        This method handles the discontinuity by splitting into vapor/liquid branches.
         """
-        indep_input = np.atleast_1d(indep)
-        Tr_input = np.atleast_1d(Tr)
-        scalar_input = (indep_input.size == 1 and Tr_input.size == 1)
         
-        # Check bounds
-        if np.any(indep_input < 0.1) or np.any(indep_input > 50):
-            warnings.warn("Pr values outside typical range [0.1, 50]")
-        
-        if np.any(Tr_input < self.Tr_values.min()) or np.any(Tr_input > self.Tr_values.max()):
-            warnings.warn(f"Tr values outside data range [{self.Tr_values.min():.2f}, {self.Tr_values.max():.2f}]")
-        
-        depvar_result = np.zeros_like(indep_input, dtype=float)
-        
-        for i, (ind, tr) in enumerate(zip(indep_input, Tr_input)):
-            # Find bounding Tr values
-            idx = np.searchsorted(self.Tr_values, tr)
+        idx = np.searchsorted(self.Tr_values, Tr)
             
-            if idx == 0 or idx >= len(self.Tr_values):
-                # Extrapolation - use nearest isotherm
-                Tr_nearest = self.Tr_values[0] if idx == 0 else self.Tr_values[-1]
-                depvar_result[i] = self._interpolate_on_isotherm(ind, Tr_nearest, phase)
-                
-            elif self.Tr_values[idx-1] == tr:
-                # Exactly on an isotherm
-                depvar_result[i] = self._interpolate_on_isotherm(ind, tr, phase)
-                
-            else:
-                # Between isotherms - linear interpolation
-                Tr_low = self.Tr_values[idx-1]
-                Tr_high = self.Tr_values[idx]
-                
-                depvar_low = self._interpolate_on_isotherm(ind, Tr_low, phase)
-                depvar_high = self._interpolate_on_isotherm(ind, Tr_high, phase)
-                
-                alpha = (tr - Tr_low) / (Tr_high - Tr_low)
-                depvar_result[i] = depvar_low + alpha * (depvar_high - depvar_low)
-        
-        if scalar_input:
-            return np.round(depvar_result.item(), round) if round is not None else depvar_result.item()
-        return np.round(depvar_result, round) if round is not None else depvar_result
-    
-    def _interpolate_on_isotherm(self, indep, Tr, phase='auto'):
-        """Interpolate Z on a single isotherm, handling phase transitions."""
-        interp_data = self.interpolators[Tr]
-        
-        if interp_data['type'] == 'single_phase':
-            # Simple case
-            return interp_data['interp'](indep)
-        
+        if idx == 0 or idx >= len(self.Tr_values):
+            # Extrapolation - use nearest isotherm
+            raise ValueError(f'Tr={Tr} is out of bounds ({self.Tr_values[0]} to {self.Tr_values[-1]}) for interpolation.')
+            
+        if indep > 1.0:
+            phase = 'supercritical'
+            depvar = self._supercrit(indep, Tr, round)
         else:
-            # Two-phase region
-            indep_sat = interp_data[f'{self.indepvar}_sat']
-            
-            if phase == 'auto':
-                # Determine phase based on pressure
-                if indep < indep_sat:
-                    return interp_data['vapor'](indep)
-                else:
-                    return interp_data['liquid'](indep)
-            elif phase == 'vapor':
-                return interp_data['vapor'](indep)
-            elif phase == 'liquid':
-                return interp_data['liquid'](indep)
+            depvar = self._subcrit(indep, Tr, round)
+
+        return depvar
+
+    def _supercrit(self, indep, Tr, round: int = 2):
+        """Handle supercritical region (indep >= 1.0)."""
+
+        idx = np.searchsorted(self.Tr_values, Tr)
+        if self.Tr_values[idx-1] == Tr:
+            # Exactly on an isotherm
+            depvar_value = self.interpolators[Tr]['interp'](indep)            
+        else:
+            # Between isotherms - linear interpolation
+            Tr_low = self.Tr_values[idx-1]
+            Tr_high = self.Tr_values[idx]
+            logger.debug(f"Supercritical interpolation at Pr = {indep}: Tr={Tr:.3f} between {Tr_low:.3f} and {Tr_high:.3f}")
+            logger.debug(f'Trlow {self.interpolators[Tr_low]}')
+            logger.debug(f'Trhigh {self.interpolators[Tr_high]}')
+
+            interp = 'interp' if 'interp' in self.interpolators[Tr_low] else 'liquid'
+            depvar_low = self.interpolators[Tr_low].get(interp)(indep)
+            interp = 'interp' if 'interp' in self.interpolators[Tr_high] else 'liquid'
+            depvar_high = self.interpolators[Tr_high].get(interp)(indep)
+
+            alpha = (Tr - Tr_low) / (Tr_high - Tr_low)
+            depvar_value = depvar_low + alpha * (depvar_high - depvar_low)
+        
+        return dict(state='supercritical', phase='supercritical', depvar=np.round(depvar_value, round))
+
+    def _subcrit(self, indep, Tr, round):
+        """ handle subcritical region (indep < 1.0)."""
+        depvar_sat_L = self.sat_indep_to_liquid_depvar(indep)
+        depvar_sat_V = self.sat_indep_to_vapor_depvar(indep)
+        Tr_sat = self.sat_indep_to_saturation_Tr(indep)
+        logger.debug(f"Subcritical: indep={indep:.3f}, Tr={Tr:.3f}, Tr_sat({self.depvar})={Tr_sat:.3f}, depvar_sat_L={depvar_sat_L:.3f}, depvar_sat_V={depvar_sat_V:.3f}")
+
+        if np.isclose(Tr, Tr_sat, atol=1e-1):
+            # Saturated state
+            return dict(
+                state='saturated',
+                phase='two_phase',
+                depvar_liquid=np.round(depvar_sat_L, round),
+                depvar_vapor=np.round(depvar_sat_V, round)
+            )
+        elif Tr < Tr_sat:
+            # Subcooled liquid
+            depvar_value = self._subcrit_choose(indep, Tr, 'liquid', round)
+            return dict(
+                state='subcooled',
+                phase='liquid',
+                depvar=np.round(depvar_value, round)
+            )
+        else:
+            # Superheated vapor
+            depvar_value = self._subcrit_choose(indep, Tr, 'vapor', round)
+            return dict(
+                state='superheated',
+                phase='vapor',
+                depvar=np.round(depvar_value, round)
+            )
+        
+    def _subcrit_choose(self, indep, Tr, phase, round):
+        """ Interpolate in subcooled liquid region. """
+        idx = np.searchsorted(self.Tr_values, Tr)
+        
+        if self.Tr_values[idx-1] == Tr:
+            # Exactly on an isotherm
+            interp = self.interpolators[Tr]
+            if interp['type'] == 'single_phase':
+                depvar_value = interp['interp'](indep)
             else:
-                raise ValueError(f"Invalid phase: {phase}")
+                depvar_value = interp[phase](indep)
+        else:
+            # Between isotherms - linear interpolation
+            Tr_low = self.Tr_values[idx-1]
+            Tr_high = self.Tr_values[idx]
+            
+            interp_low = self.interpolators[Tr_low]
+            if interp_low['type'] == 'single_phase':
+                depvar_low = interp_low['interp'](indep)
+            else:
+                depvar_low = interp_low[phase](indep)
+                
+            interp_high = self.interpolators[Tr_high]
+            if interp_high['type'] == 'single_phase':
+                depvar_high = interp_high['interp'](indep)
+            else:
+                depvar_high = interp_high[phase](indep)
+            
+            alpha = (Tr - Tr_low) / (Tr_high - Tr_low)
+            depvar_value = depvar_low + alpha * (depvar_high - depvar_low)
+        
+        return depvar_value
+
+    # def get_saturation_indepvar(self, Tr):
+    #     """
+    #     Get saturation independent variable value for a given Tr < 1.0.
+        
+    #     Returns None if Tr >= 1.0 (supercritical).
+    #     """
+    #     if Tr >= 1.0:
+    #         return None
+        
+    #     # Find nearest Tr in data
+    #     idx = np.argmin(np.abs(self.Tr_values - Tr))
+    #     Tr_nearest = self.Tr_values[idx]
+        
+    #     if self.phase_transitions[Tr_nearest] is not None:
+    #         return self.phase_transitions[Tr_nearest][f'{self.indepvar}_sat']
+    #     return None
     
-    def get_saturation_indepvar(self, Tr):
-        """
-        Get saturation independent variable value for a given Tr < 1.0.
-        
-        Returns None if Tr >= 1.0 (supercritical).
-        """
-        if Tr >= 1.0:
-            return None
-        
-        # Find nearest Tr in data
-        idx = np.argmin(np.abs(self.Tr_values - Tr))
-        Tr_nearest = self.Tr_values[idx]
-        
-        if self.phase_transitions[Tr_nearest] is not None:
-            return self.phase_transitions[Tr_nearest][f'{self.indepvar}_sat']
-        return None
-    
-    def plot_chart(self, Tr_curves=None, figsize=(12, 8), show_phases=True):
+    def plot_chart(self, Tr_curves=None, figsize=(12, 8), show_phases=True, show_points=[]):
         """Plot the compressibility chart with phase transitions marked."""
         import matplotlib.pyplot as plt
         from matplotlib import colormaps as cm
@@ -483,6 +533,10 @@ class CorrStsChart(ABC):
                     ax.plot([trans[f'{self.indepvar}_sat'], trans[f'{self.indepvar}_sat']], [trans[f'{self.depvar}_L'], trans[f'{self.depvar}_V']], color=cmap(idx/n_iso), 
                               linestyle='--', linewidth=1.5, alpha=0.5)
         
+        for point in show_points:
+            indep_val, dep_val = point
+            ax.plot(indep_val, dep_val, 'rx', markersize=8, markeredgewidth=2, color='red')
+
         ax.set_xlabel('Reduced Pressure, Pr', fontsize=12)
         ax.set_ylabel(config['depvar_axis_label'], fontsize=12)
         ax.set_title(f'Corresponding States Chart for {config["depvar_name"]} (Zc = 0.27)\n',
@@ -567,48 +621,24 @@ class EntropyDepartureChart(CorrStsChart):
             depvar_lims = [0, 21.5]
         )
 
-class CorrespondingStatesChartReader:
+_instance = None
+def get_charts():
+    global _instance
+    if _instance is None:
+        _instance = {
+            'Zchart': CompressibilityChart(),
+            'Hchart': EnthalpyDepartureChart(),
+            'Schart': EntropyDepartureChart()
+        }
+    return _instance
 
-    def __init__(self):
-        self.Zchart = CompressibilityChart()
-        self.Hchart = EnthalpyDepartureChart()
-        self.Schart = EntropyDepartureChart()
-
-    def readcharts(self, Tr: float, Pr: float, round: int = 2):
-        Z = self.Zchart.get_depvar(Pr, Tr, round=round)
-        Hdep = self.Hchart.get_depvar(Pr, Tr, round=round)
-        Sdep = self.Schart.get_depvar(Pr, Tr, round=round)
-        return dict(Z=Z, Hdep=Hdep, Sdep=Sdep)
-    
-    def dimensionalized_lookup(self, T: float, P: float, Tc: float, Pc: float, R_pv: GasConstant):
-        Tr = T / Tc
-        Pr = P / Pc
-        chartreads = self.readcharts(Tr, Pr, round=2)
-        Hdep = -chartreads['Hdep'] * Tc * 4.184
-        Sdep = -chartreads['Sdep'] * 4.184
-        # Z = PV/RT -> V = ZRT/P
-        v = chartreads['Z'] * R_pv * T / P
-        result = StateReporter({})
-        result.add_property('T', T, 'K', '{: .2f}')
-        result.add_property('P', P, R_pv.pressure_unit, '{: .2f}')
-        # result.add_property('Tc', Tc, 'K', '{: .2f}')
-        # result.add_property('Pc', Pc, R_pv.pressure_unit, '{: .2f}')
-        result.add_property('Tr', Tr, '', '{: .2f}')
-        result.add_property('Pr', Pr, '', '{: .2f}')
-        result.add_property('v', v, f'{R_pv.volume_unit}/mol', '{: .6f}')
-        result.add_property('Z', chartreads['Z'], '', '{: .2f}')
-        result.add_property('Hdep', Hdep, 'J/mol', '{: .2f}')
-        result.add_property('Sdep', Sdep, 'J/mol-K', '{: .2f}')
-        result.add_value_to_property('Hdep', chartreads['Hdep'], '-cal/mol-K', '{: .2f}')
-        result.add_value_to_property('Sdep', chartreads['Sdep'], '-cal/mol-K', '{: .2f}')
-        return result
-        
 def demo():
     import matplotlib.pyplot as plt
     
-    Zchart = CompressibilityChart()
-    Hchart = EnthalpyDepartureChart()
-    Schart = EntropyDepartureChart()
+    charts = get_charts()
+    Zchart = charts['Zchart']
+    Hchart = charts['Hchart']
+    Schart = charts['Schart']
     
     # Validation
     logger.debug("\n" + "="*70)
@@ -659,7 +689,6 @@ def demo():
     logger.debug("\n" + "="*70)
     logger.debug("DEMO COMPLETE")
     logger.debug("="*70)
-
 
 if __name__ == "__main__":
     demo()

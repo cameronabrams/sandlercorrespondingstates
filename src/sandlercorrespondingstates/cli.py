@@ -1,14 +1,12 @@
-from .charts import *
-from sandlerprops.properties import PropertiesDatabase
-from sandlermisc.gas_constant import GasConstant
-from sandlermisc.thermals import DeltaH_IG, DeltaS_IG
-from sandlermisc.statereporter import StateReporter
+from .csstate import CSState
+from sandlermisc import GasConstant, StateReporter
 import argparse as ap
 import shutil
 import logging
 import os
+from importlib.metadata import version
 
-banner = """
+banner = r"""
    _____                 ____                                                  
   / ___/____ _____  ____/ / /__  _____                                         
   \__ \/ __ `/ __ \/ __  / / _ \/ ___/                                         
@@ -23,13 +21,13 @@ banner = """
                 (__  ) /_/ /_/ / /_/  __(__  )                                 
                /____/\__/\__,_/\__/\___/____/                                  
                                         
-(c) 2025, Cameron F. Abrams <cfa22@drexel.edu>
+(c) 2026, Cameron F. Abrams <cfa22@drexel.edu>
 """
 
 logger = logging.getLogger(__name__)
 
 def setup_logging(args):    
-    loglevel_numeric = getattr(logging, args.logging_level.upper())
+    loglevel_numeric = getattr(logging, args.log_level.upper())
     if args.log:
         if os.path.exists(args.log):
             shutil.copyfile(args.log, args.log+'.bak')
@@ -45,84 +43,50 @@ def setup_logging(args):
     logging.getLogger('').addHandler(console)
 
 def state(args):
-    db = PropertiesDatabase()
-    component = db.get_compound(args.n)
-    if component is None:
-        print(f"Component '{args.n}' not found in database.")
-        return
-    cs = CorrespondingStatesChartReader()
-    Rpv = GasConstant("mpa", "m3")
-    result = cs.dimensionalized_lookup(
-        T = args.T,
-        P = args.P,
-        Tc = component.Tc,
-        Pc = component.Pc/10,
-        R_pv = Rpv
-    )
-    if result is not None:
-        print(result.report())
+    cs = CSState(T=args.T, P=args.P).set_compound(args.n)
+    if cs is not None:
+        print(cs.report())
     else:
         print("Could not find corresponding states properties for the given inputs.")
 
 def delta(args):
-    db = PropertiesDatabase()
-    component = db.get_compound(args.n) # pressures are in bars!
-    if component is None:
-        print(f"Component '{args.n}' not found in database.")
-        return
-    Cp = [component.CpA, component.CpB, component.CpC, component.CpD]
-    cs = CorrespondingStatesChartReader()
-    Rpv = GasConstant("mpa", "m3")
-    state1 = cs.dimensionalized_lookup(
-        T = args.T1,
-        P = args.P1,
-        Tc = component.Tc,
-        Pc = component.Pc/10,
-        R_pv = Rpv
-    )
-    state2 = cs.dimensionalized_lookup(
-        T = args.T2,
-        P = args.P2,
-        Tc = component.Tc,
-        Pc = component.Pc/10,
-        R_pv = Rpv
-    )
-    if state1 is not None and state2 is not None:
-        delta_State = StateReporter({})
-        prop_State = StateReporter({})
-        prop_State.add_property('Tc', component.Tc, 'K', fstring="{:.2f}")
-        prop_State.add_property('Pc', component.Pc/10, 'MPa', fstring="{:.2f}")
-        prop_State.pack_Cp(Cp, fmts=["{:.2f}", "{:.3e}", "{:.3e}", "{:.3e}"])
-        hdep2 = state2.get_value('Hdep')
-        sdep2 = state2.get_value('Sdep')
-        hdep1 = state1.get_value('Hdep')
-        sdep1 = state1.get_value('Sdep')
-        delta_h = hdep2 + DeltaH_IG(args.T1, args.T2, Cp) - hdep1
-        delta_s = sdep2 + DeltaS_IG(args.T1, args.P1, args.T2, args.P2, Cp, GasConstant("pa", "m3")) - sdep1
-        delta_pv = args.P2 * state2.get_value('v') - args.P1 * state1.get_value('v') # mpa m3/mol
-        delta_u = delta_h - delta_pv*GasConstant("pa", "m3")/Rpv
-        delta_State.add_property('Delta H', delta_h, 'J/mol', fstring="{:.2f}")
-        delta_State.add_property('Delta S', delta_s, 'J/mol-K', fstring="{:.2f}")
-        delta_State.add_property('Delta U', delta_u, 'J/mol', fstring="{:.2f}")
-        if args.show_states:
-            print("State 1:")
-            print(state1.report())
-            print("\nState 2:")
-            print(state2.report())
-            print("\nProperty differences:")
-        print(delta_State.report())
-        print("\nConstants used for calculations:")
-        print(prop_State.report())
+    state1 = CSState(T=args.T1, P=args.P1).set_compound(args.n)
+    state2 = CSState(T=args.T2, P=args.P2).set_compound(args.n)
+    delta_h = state2.h - state1.h
+    delta_s = state2.s - state1.s
+    delta_u = state2.u - state1.u
+    delta_State = StateReporter({})
+    prop_State = StateReporter({})
+    prop_State.add_property('Tc', state1.Tc, 'K', fstring="{:.2f}")
+    prop_State.add_property('Pc', state1.Pc/10, 'MPa', fstring="{:.2f}")
+    prop_State.pack_Cp(state1.Cp, fmts=["{:.2f}", "{:.3e}", "{:.3e}", "{:.3e}"])
+    delta_State.add_property('Δh', delta_h, 'J/mol', fstring="{: 6g}")
+    delta_State.add_property('Δs', delta_s, 'J/mol-K', fstring="{: 6g}")
+    delta_State.add_property('Δu', delta_u, 'J/mol', fstring="{: 6g}")
+    print(f"State-change calculations for {args.n} using corresponding states:")
+
+    if args.show_states:
+        print()
+        two_states = ["State 1:                                      State 2:"]
+        for line1, line2 in zip(state1.report().splitlines(), state2.report().splitlines()):
+            two_states.append(f"{line1:<41s}     {line2}")
+        print("\n".join(two_states))
+        print()
+        print("Property changes:")
+
+    print(delta_State.report())
+    print("\nConstants used for calculations:")
+    print(prop_State.report())
         
 def cli():
     subcommands = {
         'state': dict(
             func = state,
-            help = 'work with corresponding states for a single state'
+            help = 'Look up corresponding states properties for a single state'
         ),
         'delta': dict(
             func = delta,
-            help = 'work with property differences between two states'
+            help = 'Compute corresponding states property differences between two states'
         ),
     }
     parser = ap.ArgumentParser(
@@ -137,7 +101,7 @@ def cli():
         help='toggle banner message'
     )
     parser.add_argument(
-        '--logging-level',
+        '--log-level',
         type=str,
         default='debug',
         choices=[None, 'info', 'debug', 'warning'],
@@ -149,6 +113,13 @@ def cli():
         type=str,
         default='',
         help='File to which diagnostic log messages are written'
+    )
+    parser.add_argument(
+        '-v',
+        '--version',
+        action='version',
+        version=f'sandlercubics version {version("sandlercubics")}',
+        help='show program version and exit'
     )
     subparsers = parser.add_subparsers(
         title="subcommands",
