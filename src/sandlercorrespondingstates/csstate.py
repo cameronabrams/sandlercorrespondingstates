@@ -137,7 +137,7 @@ class CSState:
         return np.array([self._cache['Z']['depvar']])
     
     @property
-    def h_dep(self) -> np.ndarray:
+    def h_departure(self) -> np.ndarray:
         """Enthalpy departure in J/mol."""
         if 'h_dep_read' not in self._cache:
             charts = get_charts()
@@ -156,7 +156,7 @@ class CSState:
         return np.array([self._cache['h_dep_read']['depvar'] * -4.184 * self.Tc])
 
     @property
-    def s_dep(self) -> np.ndarray:
+    def s_departure(self) -> np.ndarray:
         """Entropy departure in J/mol-K."""
         if 's_dep_read' not in self._cache:
             charts = get_charts()
@@ -198,7 +198,7 @@ class CSState:
             raise ValueError("Cp data required for absolute enthalpy calculation.")
         dH_ideal = DeltaH_IG(self.Tref, self.T, self.Cp)
         logger.debug(f'dh_ideal: {dH_ideal} for Tref {self.Tref} to T {self.T} with Cp {self.Cp}')
-        return self.h_dep + dH_ideal
+        return self.h_departure + dH_ideal
 
     @property
     def u(self) -> np.ndarray:
@@ -252,27 +252,24 @@ class CSState:
             raise ValueError("Cp data required for absolute entropy calculation.")
         # make sure Pref_local is in correct units (same as self.P)
         dS_ideal = DeltaS_IG(self.Tref, self.Pref_local, self.T, self.P, self.Cp, self.R)
-        return self.s_dep + dS_ideal
+        return self.s_departure + dS_ideal
 
     def delta_h(self, other: CSState) -> np.ndarray:
         """
         Computes and returns enthalpy change from self to other state
         """
-        self.unit_consistency(other)
         return other.h - self.h
 
     def delta_s(self, other: CSState) -> np.ndarray:
         """
         Computes and returns entropy change from self to other state
         """
-        self.unit_consistency(other)
         return other.s - self.s
     
     def delta_pv(self, other: CSState) -> np.ndarray:
         """
         Returns Delta(PV) in thermal (not PV) units 
         """
-        self.unit_consistency(other)
         return (other.Pv - self.Pv) * self.R / self.R_pv
     
     def delta_u(self, other: CSState) -> np.ndarray:
@@ -308,21 +305,42 @@ class CSState:
         """
         if compound is not None:
             self.Tc = compound.Tc
-            Pc_bar = compound.Pc
-            if self.pressure_unit == 'MPa' or self.pressure_unit == 'mpa':
-                self.Pc = Pc_bar / 10.0
-            elif self.pressure_unit == 'bar':
-                self.Pc = Pc_bar
-            elif self.pressure_unit == 'kPa' or self.pressure_unit == 'kpa':
-                self.Pc = Pc_bar * 100.0
-            elif self.pressure_unit == 'Pa' or self.pressure_unit == 'pa':
-                self.Pc = Pc_bar * 1.e5
-            elif self.pressure_unit == 'atm':
-                self.Pc = Pc_bar / 1.01325
+            Pc = compound.Pc
+            Pc_unit = compound.metadata['unit']['Pc']
+            if Pc_unit == self.pressure_unit:
+                self.Pc = Pc
             else:
-                raise ValueError(f"Unsupported pressure unit: {self.pressure_unit}")
+                self.Pc = unitconvert(Pc, Pc_unit, self.pressure_unit)
             self.Cp = deepcopy(compound.Cp)
         return self
+
+    def get_unit(self, field_name: str) -> str:
+        """Get the unit for a given field"""
+        unit_map = {
+            'P': self.pressure_unit,
+            'T': self.temperature_unit,
+            'x': f'{self.mass_unit} vapor/{self.mass_unit} total',
+            'v': f'{self.volume_unit}/{self.mass_unit}',
+            'u': f'{self.energy_unit}/{self.mass_unit}',
+            'h': f'{self.energy_unit}/{self.mass_unit}',
+            's': f'{self.energy_unit}/{self.mass_unit}-K',
+            'Pv': f'{self.energy_unit}/{self.mass_unit}',
+        }
+        return unit_map.get(field_name)
+    
+    def get_formatter(self, field_name: str) -> str:
+        """Get the formatter for a given field"""
+        formatter_map = {
+            'P': '{: 5g}',
+            'T': '{: 5g}',
+            'x': '{: 2g}',
+            'v': '{: 6g}',
+            'u': '{: 6g}',
+            'h': '{: 6g}',
+            's': '{: 6g}',
+            'Pv': '{: 6g}',
+        }
+        return formatter_map.get(field_name)
 
     def report(self):
         reporter = StateReporter()
@@ -330,7 +348,7 @@ class CSState:
             if getattr(self, p) is not None:
                 reporter.add_property(p, self._from_table_units(getattr(self, p), self.get_unit(p)), self.get_unit(p), self.get_formatter(p))
         if self.x is not None:
-            reporter.add_property('x', self.x, f'{self.mass_unit} vapor/{self.mass_unit} total')
+            reporter.add_property('x', self.x, self.get_unit('x'), self.get_formatter('x'))
             for phase, state in [('L', self.Liquid), ('V', self.Vapor)]:
                 for p in self._STATE_VAR_ORDERED_FIELDS + ['Pv']:
                     if not p in 'TP':
