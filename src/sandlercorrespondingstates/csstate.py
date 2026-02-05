@@ -3,7 +3,7 @@ import numpy as np
 from copy import deepcopy
 from dataclasses import dataclass, field
 from .charts import get_charts
-from sandlermisc import GasConstant, DeltaH_IG, DeltaS_IG, StateReporter
+from sandlermisc import R, DeltaH_IG, DeltaS_IG, StateReporter
 from sandlerprops import Compound, get_database
 
 import logging
@@ -99,14 +99,6 @@ class CSState:
                         Psats[chart] = charts[chart].sat_Tr_to_saturation_indep(self.Tr) * self.Pc
                     self.P = np.mean(list(Psats.values()))
                     logger.debug(f"Computed saturation pressure P={self.P} MPa for T={self.T} K and x={self.x} ({list(Psats.values())})")
-
-    @property
-    def R(self) -> GasConstant:
-        return GasConstant("pa", "m3")
-
-    @property
-    def R_pv(self) -> GasConstant:
-        return GasConstant(self.pressure_unit, self.volume_unit)
 
     @property
     def Tr(self) -> float:
@@ -213,7 +205,7 @@ class CSState:
         if self.Cp is None:
             raise ValueError("Cp data required for absolute internal energy calculation.")
         # u = h - pv
-        return self.h - self.Pv * self.R / self.R_pv
+        return self.h - self.Pv 
 
     @property
     def Pref_local(self) -> float:
@@ -270,7 +262,7 @@ class CSState:
         """
         Returns Delta(PV) in thermal (not PV) units 
         """
-        return (other.Pv - self.Pv) * self.R / self.R_pv
+        return (other.Pv - self.Pv) 
     
     def delta_u(self, other: CSState) -> np.ndarray:
         """

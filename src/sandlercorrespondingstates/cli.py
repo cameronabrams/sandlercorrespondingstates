@@ -1,5 +1,5 @@
 from .csstate import CSState
-from sandlermisc import GasConstant, StateReporter
+from sandlermisc import R, StateReporter
 import argparse as ap
 import shutil
 import logging

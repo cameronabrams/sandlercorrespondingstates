@@ -10,8 +10,7 @@ from abc import ABC, abstractmethod
 from importlib.resources import files
 from pathlib import Path
 
-from sandlermisc.gas_constant import GasConstant
-from sandlermisc.statereporter import StateReporter
+from sandlermisc import StateReporter, R
 
 logger = logging.getLogger(__name__)
 
