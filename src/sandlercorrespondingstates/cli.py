@@ -1,5 +1,5 @@
 from .csstate import CSState
-from sandlermisc import R, StateReporter
+from sandlermisc import R, StateReporter, ureg
 import argparse as ap
 import shutil
 import logging
@@ -42,50 +42,93 @@ def setup_logging(args):
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-def state(args):
-    cs = CSState(T=args.T, P=args.P).set_compound(args.n)
-    if cs is not None:
-        print(cs.report())
-    else:
-        print("Could not find corresponding states properties for the given inputs.")
+def state_subcommand(args):
+    """
+    Calculate and report the state for a single condition using the corresponding states method.
 
-def delta(args):
-    state1 = CSState(T=args.T1, P=args.P1).set_compound(args.n)
-    state2 = CSState(T=args.T2, P=args.P2).set_compound(args.n)
-    delta_h = state2.h - state1.h
-    delta_s = state2.s - state1.s
-    delta_u = state2.u - state1.u
-    delta_State = StateReporter({})
-    prop_State = StateReporter({})
-    prop_State.add_property('Tc', state1.Tc, 'K', fstring="{:.2f}")
-    prop_State.add_property('Pc', state1.Pc/10, 'MPa', fstring="{:.2f}")
-    prop_State.pack_Cp(state1.Cp, fmts=["{:.2f}", "{:.3e}", "{:.3e}", "{:.3e}"])
-    delta_State.add_property('Δh', delta_h, 'J/mol', fstring="{: 6g}")
-    delta_State.add_property('Δs', delta_s, 'J/mol-K', fstring="{: 6g}")
-    delta_State.add_property('Δu', delta_u, 'J/mol', fstring="{: 6g}")
-    print(f"State-change calculations for {args.n} using corresponding states:")
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments.
+    """
+    csstate = CSState()
+    if args.n is not None:
+        csstate.set_compound(args.n)
+    if args.Tc is not None:
+        csstate.Tc = args.Tc
+    if args.Pc is not None:
+        csstate.Pc = args.Pc
+    if args.Cp is not None:
+        csstate.Cp = args.Cp
+    for p in 'TPx':
+        v = getattr(args, p, None)
+        if v is not None:
+            setattr(csstate, p, v)
+    additional_vars = ['Tc', 'Pc', 'Tr', 'Pr', 'Z', 'h_departure', 's_departure', 'neg_h_dep_over_Tc_read', 'neg_s_dep_read']
+    if csstate.T < csstate.Tc:
+        additional_vars.extend(['Pvap', 'Hvap', 'Svap'])
+    if csstate.P < csstate.Pc:
+        additional_vars.extend(['Tsat'])
+    property_notes = {
+        'Pvap': f'at {csstate.T.to(ureg.kelvin):g}',
+        'Hvap': f'at {csstate.T.to(ureg.kelvin):g}',
+        'Svap': f'at {csstate.T.to(ureg.kelvin):g}',
+        'Tsat': f'at {csstate.P.to(ureg.megapascal):g}',
+    }
+    
+    print(csstate.report(additional_vars=additional_vars, show_parameters=args.show_props, 
+                    property_notes=property_notes))
 
-    if args.show_states:
+def delta_subcommand(args):
+    csstate1 = CSState(T=args.T1, P=args.P1).set_compound(args.n)
+    csstate2 = CSState(T=args.T2, P=args.P2).set_compound(args.n)
+    if args.n is not None:
+        csstate1.set_compound(args.n)
+        csstate2.set_compound(args.n)
+    if args.Tc is not None:
+        csstate1.Tc = args.Tc
+        csstate2.Tc = args.Tc
+    if args.Pc is not None:
+        csstate1.Pc = args.Pc
+        csstate2.Pc = args.Pc
+    if args.Cp is not None:
+        csstate1.Cp = args.Cp
+        csstate2.Cp = args.Cp
+
+    for p in 'TPx':
+        v = getattr(args, f'{p}1', None)
+        if v is not None:
+            setattr(csstate1, p, v)
+        v = getattr(args, f'{p}2', None)
+        if v is not None:
+            setattr(csstate2, p, v)
+    additional_vars = ['Tc', 'Pc', 'Tr', 'Pr', 'Z', 'h_departure', 's_departure', 'neg_h_dep_over_Tc_read', 'neg_s_dep_read']
+    state_1 = csstate1.report(additional_vars=additional_vars)
+    state_2 = csstate2.report(additional_vars=additional_vars)
+    delta = csstate1.delta(csstate2, additional_vars=['Pv', 'Z'])
+    print(f"State-change calculations for {args.n} using {csstate1.description}:")
+    if args.show_props or args.show_states:
         print()
-        two_states = ["State 1:                                      State 2:"]
-        for line1, line2 in zip(state1.report().splitlines(), state2.report().splitlines()):
-            two_states.append(f"{line1:<41s}     {line2}")
+        two_states = ["State 1:                                                     State 2:"]
+        for line1, line2 in zip(state_1.splitlines(), state_2.splitlines()):
+            two_states.append(f"{line1:<56s}     {line2}")
         print("\n".join(two_states))
         print()
         print("Property changes:")
+    for p in ['T', 'P', 'h', 's', 'u', 'v', 'Pv', 'Z']:
+        if p in delta:
+            val = delta[p]
+            eq = ' =' if p == 'Pv' else '  ='
+            print(f'Δ{p}{eq} {val: 6g}')
 
-    print(delta_State.report())
-    print("\nConstants used for calculations:")
-    print(prop_State.report())
-        
 def cli():
     subcommands = {
         'state': dict(
-            func = state,
+            func = state_subcommand,
             help = 'Look up corresponding states properties for a single state'
         ),
         'delta': dict(
-            func = delta,
+            func = delta_subcommand,
             help = 'Compute corresponding states property differences between two states'
         ),
     }
@@ -136,14 +179,18 @@ def cli():
         )
         command_parsers[k].set_defaults(func=specs['func'])
 
-    state_args = [
-        ('P', 'pressure', 'pressure in MPa', float, True),
-        ('T', 'temperature', 'temperature in K', float, True),
-        ('Pc', 'critical_pressure', 'critical pressure in MPa (if component not specified)', float, False),
+    crit_args = [
+        ('n', 'component', 'component name (e.g., methane, ethane, etc.)', str, False),
+        ('Pc', 'critical_pressure', 'critical pressure (if component not specified)', float, False),
         ('Tc', 'critical_temperature', 'critical temperature in K (if component not specified)', float, False),
-        ('n', 'component', 'component name (e.g., methane, ethane, etc.)', str, False)
     ]
-    for prop, long_arg, explanation, arg_type, required in state_args:
+
+    state_args = [
+        ('P', 'pressure', 'pressure in MPa', float, False),
+        ('T', 'temperature', 'temperature in K (always in K)', float, False),
+        ('x', 'vapor_fraction', 'vapor fraction (dimensionless)', float, False),
+    ]
+    for prop, long_arg, explanation, arg_type, required in state_args + crit_args:
         command_parsers['state'].add_argument(
             f'-{prop}',
             f'--{long_arg}',
@@ -152,15 +199,26 @@ def cli():
             required=required,
             help=explanation
         )
+    command_parsers['state'].add_argument(
+        '--Cp',
+        nargs=4,
+        type=float,
+        metavar=('CpA', 'CpB', 'CpC', 'CpD'),
+        help='heat capacity polynomial coefficients A, B, C, D (J/mol-K, J/mol-K^2, J/mol-K^3, J/mol-K^4) (if component not specified)',
+        default=None
+    )
+    command_parsers['state'].add_argument(
+        '--show-props',
+        default=False,
+        action=ap.BooleanOptionalAction,
+        help='also show all critical properties and Cp coefficients used'
+    )
     
     delta_args = [
         ('P1', 'pressure1', 'pressure of state 1 in MPa', float, True),
         ('T1', 'temperature1', 'temperature of state 1 in K', float, True),
         ('P2', 'pressure2', 'pressure of state 2 in MPa', float, True),
         ('T2', 'temperature2', 'temperature of state 2 in K', float, True),
-        ('Pc', 'critical_pressure', 'critical pressure in MPa (if component not specified)', float, False),
-        ('Tc', 'critical_temperature', 'critical temperature in K (if component not specified)', float, False),
-        ('n', 'component', 'component name (e.g., methane, ethane, etc.)', str, False)
     ]
     for prop, long_arg, explanation, arg_type, required in delta_args:
         command_parsers['delta'].add_argument(
@@ -171,6 +229,29 @@ def cli():
             required=required,
             help=explanation
         )
+    for prop, long_arg, explanation, arg_type, required in crit_args:
+        command_parsers['delta'].add_argument(
+            f'-{prop}',
+            f'--{long_arg}',
+            dest=prop,
+            type=arg_type,
+            required=required,
+            help=explanation
+        )
+    command_parsers['delta'].add_argument(
+        '--Cp',
+        nargs=4,
+        type=float,
+        metavar=('CpA', 'CpB', 'CpC', 'CpD'),
+        help='heat capacity polynomial coefficients A, B, C, D (J/mol-K, J/mol-K^2, J/mol-K^3, J/mol-K^4) (if component not specified)',
+        default=None
+    )
+    command_parsers['delta'].add_argument(
+        '--show-props',
+        default=False,
+        action=ap.BooleanOptionalAction,
+        help='show properties for both states in addition to the differences'
+    )
     command_parsers['delta'].add_argument(
         '--show-states',
         default=False,
@@ -179,6 +260,7 @@ def cli():
     )
     args = parser.parse_args()
     setup_logging(args)
+
     if args.banner:
         print(banner)
     if hasattr(args, 'func'):

@@ -10,7 +10,9 @@ from abc import ABC, abstractmethod
 from importlib.resources import files
 from pathlib import Path
 
-from sandlermisc import StateReporter, R
+from sandlermisc import StateReporter, R, ureg
+
+import pint
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ class CorrStsChart(ABC):
 
     @property
     @abstractmethod
-    def depvar(self):
+    def depvar(self) -> str:
         pass
 
     @property
@@ -284,7 +286,6 @@ class CorrStsChart(ABC):
         vapor_branch_depvar = [c[f'{self.depvar}_V'] for c in self.phase_transitions.values() if c is not None]
         liquid_branch_depvar = [c[f'{self.depvar}_L'] for c in self.phase_transitions.values() if c is not None]
 
-
         both_branch_indep.append(1.0) # critical point
         both_branch_Tr.append(1.0)
         # get the critical depvar value from Tr=1.0 isotherm and indepvar value 1.0
@@ -305,8 +306,6 @@ class CorrStsChart(ABC):
 
     def _create_interpolators(self):
         """Create interpolators for each isotherm, handling phase transitions."""
-        
-        
         self.interpolators = {}
         
         for Tr in self.Tr_values:
@@ -368,7 +367,6 @@ class CorrStsChart(ABC):
             raise ValueError(f'Tr={Tr} is out of bounds ({self.Tr_values[0]} to {self.Tr_values[-1]}) for interpolation.')
             
         if indep > 1.0:
-            phase = 'supercritical'
             depvar = self._supercrit(indep, Tr, round)
         else:
             depvar = self._subcrit(indep, Tr, round)
@@ -407,15 +405,7 @@ class CorrStsChart(ABC):
         Tr_sat = self.sat_indep_to_saturation_Tr(indep)
         logger.debug(f"Subcritical: indep={indep:.3f}, Tr={Tr:.3f}, Tr_sat({self.depvar})={Tr_sat:.3f}, depvar_sat_L={depvar_sat_L:.3f}, depvar_sat_V={depvar_sat_V:.3f}")
 
-        if np.isclose(Tr, Tr_sat, atol=1e-1):
-            # Saturated state
-            return dict(
-                state='saturated',
-                phase='two_phase',
-                depvar_liquid=np.round(depvar_sat_L, round),
-                depvar_vapor=np.round(depvar_sat_V, round)
-            )
-        elif Tr < Tr_sat:
+        if Tr < Tr_sat:
             # Subcooled liquid
             depvar_value = self._subcrit_choose(indep, Tr, 'liquid', round)
             return dict(
@@ -464,23 +454,6 @@ class CorrStsChart(ABC):
             depvar_value = depvar_low + alpha * (depvar_high - depvar_low)
         
         return depvar_value
-
-    # def get_saturation_indepvar(self, Tr):
-    #     """
-    #     Get saturation independent variable value for a given Tr < 1.0.
-        
-    #     Returns None if Tr >= 1.0 (supercritical).
-    #     """
-    #     if Tr >= 1.0:
-    #         return None
-        
-    #     # Find nearest Tr in data
-    #     idx = np.argmin(np.abs(self.Tr_values - Tr))
-    #     Tr_nearest = self.Tr_values[idx]
-        
-    #     if self.phase_transitions[Tr_nearest] is not None:
-    #         return self.phase_transitions[Tr_nearest][f'{self.indepvar}_sat']
-    #     return None
     
     def plot_chart(self, Tr_curves=None, figsize=(12, 8), show_phases=True, show_points=[]):
         """Plot the compressibility chart with phase transitions marked."""
@@ -571,7 +544,8 @@ class CompressibilityChart(CorrStsChart):
             depvar_axis_label = 'Z',
             indepvar_lims = [0.1, 50.0],
             indepvar_scale = 'log',
-            depvar_lims = [0, 1.5]
+            depvar_lims = [0, 1.5],
+            depvar_units = ureg('dimensionless')
         )
 
 class EnthalpyDepartureChart(CorrStsChart):
@@ -594,7 +568,8 @@ class EnthalpyDepartureChart(CorrStsChart):
             depvar_axis_label = r'$(h^{\rm IG} -h)/T_c\ \ \frac{\rm cal}{\rm mol K}$ (1 cal = 4.184 J)',
             indepvar_lims = [0.1, 50.0],
             indepvar_scale = 'log',
-            depvar_lims = [0, 15.0]
+            depvar_lims = [0, 15.0],
+            depvar_units = ureg('cal/(mol K)')
         )
 
 class EntropyDepartureChart(CorrStsChart):
@@ -610,14 +585,15 @@ class EntropyDepartureChart(CorrStsChart):
     @property
     def config(self):
         return dict(
-            liquid_sense = 'lower',
+            liquid_sense = 'higher',
             min_dindep = 0.1,
             min_depjump = 3.0,
             depvar_name = 'Entropy Departure',
             depvar_axis_label = r'$s^{\rm IG} -s\ \ \frac{\rm cal}{\rm mol K}$ (1 cal = 4.184 J)',
             indepvar_lims = [0.1, 50.0],
             indepvar_scale = 'log',
-            depvar_lims = [0, 21.5]
+            depvar_lims = [0, 21.5],
+            depvar_units = ureg('cal/(mol K)')
         )
 
 _instance = None
